@@ -28,9 +28,9 @@
             :class="isCloudConnected ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'bg-amber-100 text-amber-700 border-amber-300'"
             class="text-xs px-2.5 py-0.5 rounded-full border font-semibold flex items-center gap-1.5 cursor-pointer"
             @click="showConfigModal = true"
-            title="點擊設定 Firebase 連線金鑰">
+            title="點擊查看 Firebase 連線狀態">
             <span class="w-2 h-2 rounded-full" :class="isCloudConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'"></span>
-            {{ isCloudConnected ? '🟢 雙人雲端即時連線中' : '🟠 本地離線/尚未設定雲端 (點我設定)' }}
+            {{ isCloudConnected ? '🟢 雙人雲端即時連線中' : '🟠 正在自動連線雲端...' }}
           </span>
         </div>
         <p class="text-slate-500 text-xs sm:text-sm mt-1">
@@ -41,7 +41,7 @@
       <div class="flex items-center gap-3">
         <div class="flex gap-2">
           <button @click="showConfigModal = true" class="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-xl border border-indigo-200 transition">
-            ⚙️ 雲端金鑰設定
+            ⚙️ 雲端設定
           </button>
           <input type="file" ref="fileInput" @change="handleCSVUpload" accept=".csv" class="hidden">
           <button @click="$refs.fileInput.click()" class="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold rounded-xl border border-blue-200 transition">
@@ -540,47 +540,47 @@
       </div>
     </section>
 
-    <!-- ==================== 雲端 Firebase 金鑰設定視窗 (Modal) ==================== -->
+    <!-- ==================== 雲端 Firebase 金鑰檢視視窗 (Modal) ==================== -->
     <div v-if="showConfigModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
       <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 space-y-4">
         <div class="flex justify-between items-center border-b pb-3">
-          <h3 class="text-lg font-bold text-slate-900">🔑 設定 Firebase 雙人即時同步金鑰</h3>
+          <h3 class="text-lg font-bold text-slate-900">🔑 Firebase 雙人即時同步狀態</h3>
           <button @click="showConfigModal = false" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
         </div>
         <p class="text-xs text-slate-500 leading-relaxed">
-          請在下方填入 Google Firebase 控制台複製的設定參數。兩人手機只要填入**相同的設定**，無論身在何處記帳或撥款，都能秒級自動即時雙向同步！
+          系統已內建您的專屬 Firebase 金鑰。只要開啟此網頁，系統就會自動連線，兩端手機秒級即時同步！
         </p>
 
         <div class="space-y-2.5 text-xs">
           <div>
             <label class="block font-semibold text-slate-700 mb-1">apiKey</label>
-            <input type="text" v-model="fbConfigInput.apiKey" placeholder="AIzaSy..." class="w-full border rounded-lg p-2 bg-slate-50">
+            <input type="text" v-model="fbConfigInput.apiKey" class="w-full border rounded-lg p-2 bg-slate-50 text-slate-500">
           </div>
           <div class="grid grid-cols-2 gap-2">
             <div>
               <label class="block font-semibold text-slate-700 mb-1">projectId</label>
-              <input type="text" v-model="fbConfigInput.projectId" placeholder="family-finance-xxx" class="w-full border rounded-lg p-2 bg-slate-50">
+              <input type="text" v-model="fbConfigInput.projectId" class="w-full border rounded-lg p-2 bg-slate-50 text-slate-500">
             </div>
             <div>
               <label class="block font-semibold text-slate-700 mb-1">authDomain</label>
-              <input type="text" v-model="fbConfigInput.authDomain" placeholder="xxx.firebaseapp.com" class="w-full border rounded-lg p-2 bg-slate-50">
+              <input type="text" v-model="fbConfigInput.authDomain" class="w-full border rounded-lg p-2 bg-slate-50 text-slate-500">
             </div>
           </div>
           <div class="grid grid-cols-2 gap-2">
             <div>
               <label class="block font-semibold text-slate-700 mb-1">storageBucket</label>
-              <input type="text" v-model="fbConfigInput.storageBucket" placeholder="xxx.appspot.com" class="w-full border rounded-lg p-2 bg-slate-50">
+              <input type="text" v-model="fbConfigInput.storageBucket" class="w-full border rounded-lg p-2 bg-slate-50 text-slate-500">
             </div>
             <div>
               <label class="block font-semibold text-slate-700 mb-1">appId</label>
-              <input type="text" v-model="fbConfigInput.appId" placeholder="1:123456:web:xxx" class="w-full border rounded-lg p-2 bg-slate-50">
+              <input type="text" v-model="fbConfigInput.appId" class="w-full border rounded-lg p-2 bg-slate-50 text-slate-500">
             </div>
           </div>
         </div>
 
         <div class="flex justify-end gap-2 pt-3 border-t">
-          <button @click="showConfigModal = false" class="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-semibold">取消</button>
-          <button @click="saveFirebaseConfig" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition">儲存並啟動即時同步</button>
+          <button @click="showConfigModal = false" class="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-semibold">關閉</button>
+          <button @click="reconnectFirebase" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition">重新連線</button>
         </div>
       </div>
     </div>
@@ -600,14 +600,17 @@
         let db = null;
         let unsubscribeSnapshot = null;
 
-        const fbConfigInput = ref({
-          apiKey: '',
-          authDomain: '',
-          projectId: '',
-          storageBucket: '',
-          messagingSenderId: '',
-          appId: ''
-        });
+        // ⭐️ 已直接寫入專屬 Firebase 金鑰
+        const embeddedFirebaseConfig = {
+          apiKey: "AIzaSyDvY0yrqYYYQwEAlUkRrS9KDjRLxDXxPSg",
+          authDomain: "family-finance-app-2c802.firebaseapp.com",
+          projectId: "family-finance-app-2c802",
+          storageBucket: "family-finance-app-2c802.firebasestorage.app",
+          messagingSenderId: "76647455412",
+          appId: "1:76647455412:web:be506fe3ab8a4c92b155e1"
+        };
+
+        const fbConfigInput = ref({ ...embeddedFirebaseConfig });
 
         const getTodayString = () => {
           const d = new Date();
@@ -686,7 +689,6 @@
           '兆嘉-股利收入',
           '美伊-勞保年金',
           '美伊-獎金',
-          '美伊-房租收入',
           '美伊-兼職收入',
           '美伊-股利收入',
           '其他收入'
@@ -751,23 +753,20 @@
 
         // 6. 月度收入手動預算
         const monthlyIncomeBudgets = ref({
-          '兆嘉-勞保年金': 25047,
+          '兆嘉-勞保年金': 48000,
           '兆嘉-獎金': 0,
           '兆嘉-兼職收入': 0,
           '兆嘉-股利收入': 15000,
-          '美伊-勞保年金': 24047,
+          '美伊-勞保年金': 35000,
           '美伊-獎金': 0,
-          '美伊-房租收入': 25000,
-          '美伊-兼職收入': 10000,
-          '美伊-股利收入': 25000,
+          '美伊-兼職收入': 20000,
+          '美伊-股利收入': 12000,
           '其他收入': 0
         });
 
-        // 7. 完整帳戶資產清單 (加入共用帳戶)
+        // 7. 完整帳戶資產清單 (內含共用帳戶)
         const accounts = ref([
-          // ⭐️ 共用公費帳戶
           { id: 99, holder: '共用', type: '銀行活儲', name: '家庭公費共用帳戶', balance: 0 },
-
           { id: 1, holder: '兆嘉', type: '銀行活儲', name: '台銀潭子活儲', balance: 0 },
           { id: 2, holder: '兆嘉', type: '外匯存款', name: '台銀潭子外匯綜合', balance: 0 },
           { id: 3, holder: '兆嘉', type: '銀行活儲', name: '國泰潭子活儲', balance: 0 },
@@ -818,20 +817,18 @@
         const txForm = ref({
           date: getTodayString(),
           accountId: 9,
-          targetAccountId: 99, // 預設轉入共用帳戶
+          targetAccountId: 99,
           type: 'withdraw',
           category: '日常食材與餐飲',
           amount: null,
           note: ''
         });
 
-        // 依據交易類型動態切換可選類別
         const currentCategories = computed(() => {
           if (txForm.value.type === 'transfer') return transferCategories.value;
           return txForm.value.type === 'withdraw' ? allExpenseCategories.value : incomeCategories.value;
         });
 
-        // 轉帳目標帳戶排除目前轉出帳戶
         const availableTargetAccounts = computed(() => {
           return accounts.value.filter(a => a.id !== Number(txForm.value.accountId));
         });
@@ -865,7 +862,6 @@
             .sort((a, b) => new Date(b.date) - new Date(a.date));
         });
 
-        // 月度比對計算 (排除了 transfer 轉帳)
         const monthlyIncomeComparisonList = computed(() => {
           const monthlyIncomes = transactions.value.filter(t => 
             t.type === 'deposit' && (!selectedMonth.value || t.date.startsWith(selectedMonth.value))
@@ -922,7 +918,6 @@
           return monthlyActualIncomeTotal.value - monthlyActualExpenseTotal.value;
         });
 
-        // 年度比對計算
         const currentYearString = computed(() => String(selectedYear.value));
 
         const annualMajorComparisonList = computed(() => {
@@ -1040,7 +1035,6 @@
             if (doc.exists) {
               const data = doc.data();
               if (data.accounts) {
-                // 合併遠端帳戶資料，保持共用帳戶存在
                 const remoteAccounts = data.accounts;
                 if (!remoteAccounts.find(a => a.id === 99)) {
                   remoteAccounts.unshift({ id: 99, holder: '共用', type: '銀行活儲', name: '家庭公費共用帳戶', balance: 0 });
@@ -1066,25 +1060,18 @@
           });
         };
 
-        const saveFirebaseConfig = () => {
-          const cfg = fbConfigInput.value;
-          if (!cfg.apiKey || !cfg.projectId) {
-            alert('請至少填寫 apiKey 與 projectId！');
-            return;
-          }
-
-          localStorage.setItem('family_fb_config_v9', JSON.stringify(cfg));
+        const reconnectFirebase = () => {
           try {
             if (firebase.apps.length > 0) {
               firebase.apps[0].delete();
             }
-            firebase.initializeApp(cfg);
+            firebase.initializeApp(embeddedFirebaseConfig);
             db = firebase.firestore();
             initFirestoreListener();
             showConfigModal.value = false;
             alert('Firebase 連線成功！已啟動雙人即時同步監聽。');
           } catch (err) {
-            alert('Firebase 初始化失敗，請檢查金鑰是否正確：' + err.message);
+            alert('Firebase 初始化失敗：' + err.message);
           }
         };
 
@@ -1117,7 +1104,6 @@
             return;
           }
 
-          // 情況 A：內部轉帳
           if (txForm.value.type === 'transfer') {
             const toAcc = accounts.value.find(a => a.id === Number(txForm.value.targetAccountId));
             if (!toAcc) {
@@ -1148,9 +1134,7 @@
             saveToCloud();
 
             alert(`✅ 內部轉帳完成！\nNT$ ${formatNumber(amt)} 已由「${fromAcc.holder}-${fromAcc.name}」撥至「${toAcc.holder}-${toAcc.name}」` + (isCloudConnected.value ? '，並秒級同步雲端。' : '。'));
-          } 
-          // 情況 B：常態收支
-          else {
+          } else {
             if (txForm.value.type === 'withdraw') {
               fromAcc.balance -= amt;
             } else {
@@ -1319,7 +1303,6 @@
 
           if (acc) {
             const parsed = JSON.parse(acc);
-            // 確保共用帳戶始終存在
             if (!parsed.find(a => a.id === 99)) {
               parsed.unshift({ id: 99, holder: '共用', type: '銀行活儲', name: '家庭公費共用帳戶', balance: 0 });
             }
@@ -1330,19 +1313,15 @@
           if (mIncBud) monthlyIncomeBudgets.value = { ...monthlyIncomeBudgets.value, ...JSON.parse(mIncBud) };
           if (txs) transactions.value = JSON.parse(txs);
 
-          const savedCfg = localStorage.getItem('family_fb_config_v9');
-          if (savedCfg) {
-            try {
-              const cfg = JSON.parse(savedCfg);
-              fbConfigInput.value = cfg;
-              if (cfg.apiKey && cfg.projectId) {
-                firebase.initializeApp(cfg);
-                db = firebase.firestore();
-                initFirestoreListener();
-              }
-            } catch (e) {
-              console.error("自動連線 Firebase 失敗：", e);
+          // ⭐️ 開啟網頁直接使用內建金鑰自動啟動連線
+          try {
+            if (firebase.apps.length === 0) {
+              firebase.initializeApp(embeddedFirebaseConfig);
+              db = firebase.firestore();
+              initFirestoreListener();
             }
+          } catch (e) {
+            console.error("自動連線 Firebase 失敗：", e);
           }
         };
 
@@ -1396,7 +1375,7 @@
           exportCSV,
           handleCSVUpload,
           saveToCloud,
-          saveFirebaseConfig
+          reconnectFirebase
         };
       }
     }).mount('#app');
