@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>家庭財務資產與收支預算管理系統 (雙人/多人即時同步版)</title>
+  <!-- 穩定版 Vue 3 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Firebase 10 相容版 SDK (支援即時雙向監聽) -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+  <style>
+    [v-cloak] { display: none !important; }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 font-sans p-3 sm:p-8">
+  <div id="app" v-cloak class="max-w-6xl mx-auto space-y-6">
+
+    <!-- 頂部資訊列：即時連線燈號與家庭總資產 -->
+    <header class="bg-white p-5 sm:p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-wrap justify-between items-center gap-4">
+      <div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <h1 class="text-xl sm:text-2xl font-bold text-slate-900">家庭財務資產與收支管理系統</h1>
+          <!-- 雲端連線狀態燈號 -->
+          <span 
+            :class="isCloudConnected ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'bg-amber-100 text-amber-700 border-amber-300'"
+            class="text-xs px-2.5 py-0.5 rounded-full border font-semibold flex items-center gap-1.5 cursor-pointer"
+            @click="showConfigModal = true"
+            title="點擊設定 Firebase 連線金鑰">
+            <span class="w-2 h-2 rounded-full" :class="isCloudConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'"></span>
+            {{ isCloudConnected ? '🟢 雙人雲端即時連線中' : '🟠 本地離線/尚未設定雲端 (點我設定)' }}
+          </span>
+        </div>
+        <p class="text-slate-500 text-xs sm:text-sm mt-1">
+          多人手機同時開啟 ‧ 一人輸入另一人秒級同步更新 ‧ 支援共用帳戶撥款與調度
+        </p>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <div class="flex gap-2">
+          <button @click="showConfigModal = true" class="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-xl border border-indigo-200 transition">
+            ⚙️ 雲端金鑰設定
+          </button>
+          <input type="file" ref="fileInput" @change="handleCSVUpload" accept=".csv" class="hidden">
+          <button @click="$refs.fileInput.click()" class="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold rounded-xl border border-blue-200 transition">
+            📥 匯入
+          </button>
+          <button @click="exportCSV" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl border border-slate-300 transition">
+            📤 匯出
+          </button>
+        </div>
+        <div class="text-right pl-3 border-l border-slate-200">
+          <span class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">家庭總資產現值</span>
+          <div class="text-xl sm:text-3xl font-extrabold text-blue-600">NT$ {{ formatNumber(totalAssets) }}</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 支出超支預警橫幅 (月度支出) -->
+    <div v-if="overBudgetExpenses.length > 0" class="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-sm space-y-1">
+      <div class="font-bold flex items-center gap-1.5">
+        <span>⚠️ 月度支出超支預警 ({{ selectedMonth }})</span>
+        <span class="bg-amber-200 text-amber-800 text-xs px-2 py-0.5 rounded-full font-semibold">共 {{ overBudgetExpenses.length }} 項超出月預算</span>
+      </div>
+      <p class="text-xs text-amber-800">
+        以下日常項目實際支出已高於月預算上限：
+        <span v-for="(item, idx) in overBudgetExpenses" :key="item.category" class="font-semibold underline ml-1">
+          {{ item.category }} (超支 NT$ {{ formatNumber(item.actual - item.budget) }}){{ idx < overBudgetExpenses.length - 1 ? '、' : '' }}
+        </span>
+      </p>
+    </div>
+
+    <!-- 分頁選單導航 -->
+    <div class="flex gap-2 border-b border-slate-200 pb-2 overflow-x-auto">
+      <button 
+        @click="activeTab = 'monthly'" 
+        :class="activeTab === 'monthly' ? 'bg-blue-600 text-white font-semibold' : 'bg-white text-slate-600 hover:bg-slate-50'"
+        class="px-5 py-2.5 rounded-xl transition shadow-sm text-sm whitespace-nowrap">
+        📊 月度預算比對（常態收支）
+      </button>
+      <button 
+        @click="activeTab = 'annual'" 
+        :class="activeTab === 'annual' ? 'bg-indigo-600 text-white font-semibold' : 'bg-white text-slate-600 hover:bg-slate-50'"
+        class="px-5 py-2.5 rounded-xl transition shadow-sm text-sm whitespace-nowrap">
+        📅 年度收支預算（含房車貸與保險）
+      </button>
+      <button 
+        @click="activeTab = 'transactions'" 
+        :class="activeTab === 'transactions' ? 'bg-blue-600 text-white font-semibold' : 'bg-white text-slate-600 hover:bg-slate-50'"
+        class="px-5 py-2.5 rounded-xl transition shadow-sm text-sm whitespace-nowrap">
+        ✍️ 逐日記帳與互轉流水
+      </button>
+      <button 
+        @click="activeTab = 'accounts'" 
+        :class="activeTab === 'accounts' ? 'bg-blue-600 text-white font-semibold' : 'bg-white text-slate-600 hover:bg-slate-50'"
+        class="px-5 py-2.5 rounded-xl transition shadow-sm text-sm whitespace-nowrap">
+        🏛️ 資產盤點（含共用/存款/證券）
+      </button>
+    </div>
+
+    <!-- ==================== TAB 1: 月度收支預算 ==================== -->
+    <section v-if="activeTab === 'monthly'" class="space-y-6">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- 月收入總預算 -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+          <div class="flex justify-between items-start">
+            <span class="text-xs font-semibold text-slate-400">當月常規收入預算</span>
+            <span class="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 font-medium">月常態</span>
+          </div>
+          <div class="text-2xl font-bold text-slate-800 mt-1">NT$ {{ formatNumber(monthlyIncomeBudgetTotal) }}</div>
+          <div class="text-xs text-slate-500 mt-2 flex justify-between">
+            <span>當月實收：</span>
+            <strong class="text-emerald-600 font-bold">NT$ {{ formatNumber(monthlyActualIncomeTotal) }}</strong>
+          </div>
+        </div>
+
+        <!-- 月支出總預算 -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+          <div class="flex justify-between items-start">
+            <span class="text-xs font-semibold text-slate-400">當月日常支出預算</span>
+            <span class="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-600 font-medium">日常上限</span>
+          </div>
+          <div class="text-2xl font-bold text-slate-800 mt-1">NT$ {{ formatNumber(monthlyExpenseBudgetTotal) }}</div>
+          <div class="text-xs text-slate-500 mt-2 flex justify-between">
+            <span>當月日常實支：</span>
+            <strong :class="monthlyActualExpenseTotal > monthlyExpenseBudgetTotal ? 'text-red-500' : 'text-slate-700'" class="font-bold">
+              NT$ {{ formatNumber(monthlyActualExpenseTotal) }}
+            </strong>
+          </div>
+        </div>
+
+        <!-- 月度預計日常結餘 -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+          <span class="text-xs font-semibold text-slate-400">預計月度日常結餘</span>
+          <div class="text-2xl font-bold mt-1" :class="monthlyBudgetSurplus >= 0 ? 'text-blue-600' : 'text-red-500'">
+            {{ monthlyBudgetSurplus >= 0 ? '+' : '' }} NT$ {{ formatNumber(monthlyBudgetSurplus) }}
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            ※ 供年度房貸、車貸、保險及年度儲蓄調度
+          </div>
+        </div>
+
+        <!-- 當月實際日常結餘 -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+          <span class="text-xs font-semibold text-slate-400">當月實際日常淨結餘</span>
+          <div class="text-2xl font-bold mt-1" :class="monthlyActualSurplus >= 0 ? 'text-emerald-600' : 'text-red-500'">
+            {{ monthlyActualSurplus >= 0 ? '+' : '' }} NT$ {{ formatNumber(monthlyActualSurplus) }}
+          </div>
+          <div class="text-xs mt-2" :class="monthlyActualSurplus >= monthlyBudgetSurplus ? 'text-emerald-600 font-medium' : 'text-amber-600 font-medium'">
+            {{ monthlyActualSurplus >= monthlyBudgetSurplus ? '🎉 日常控制優於預算' : '⚠️ 日常支出超出原預估' }}
+          </div>
+        </div>
+      </div>
+
+      <!-- 月度預算細項對照表 -->
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+        <div class="flex justify-between items-center flex-wrap gap-2">
+          <div>
+            <h2 class="text-lg font-bold text-slate-900">月度日常收支預算明細對照</h2>
+            <p class="text-xs text-slate-500 mt-0.5">內部轉帳不影響支出上限計算；房車貸與保險統一在「年度收支」控管</p>
+          </div>
+          <div class="flex items-center gap-2 text-sm text-slate-600">
+            <span>統計月份：</span>
+            <input type="month" v-model="selectedMonth" class="border rounded-lg px-2.5 py-1 bg-slate-50 text-sm">
+          </div>
+        </div>
+
+        <!-- 月度收入項目 -->
+        <div class="space-y-3">
+          <h3 class="text-sm font-bold text-emerald-800 bg-emerald-50 px-3 py-1.5 rounded-lg inline-block">
+            📈 月度常態收入（點擊可直接手動調整每月預算）
+          </h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div v-for="item in monthlyIncomeComparisonList" :key="item.category" class="p-3.5 rounded-xl border border-emerald-100 bg-emerald-50/20 space-y-1.5">
+              <div class="flex justify-between items-center text-xs">
+                <span class="font-bold text-slate-800">{{ item.category }}</span>
+                <div class="flex items-center gap-2">
+                  <span>實收: <strong class="text-emerald-700">NT$ {{ formatNumber(item.actual) }}</strong></span>
+                  <span class="text-slate-400">/ 預估: NT$</span>
+                  <input type="number" v-model.number="monthlyIncomeBudgets[item.category]" @change="saveToCloud" class="w-24 border rounded px-1.5 py-0.5 text-right bg-white font-medium">
+                </div>
+              </div>
+              <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                <div class="bg-emerald-500 h-full rounded-full transition-all" :style="{ width: Math.min(100, item.budget > 0 ? (item.actual / item.budget) * 100 : 0) + '%' }"></div>
+              </div>
+              <div class="flex justify-between text-[11px] text-slate-400">
+                <span>達成率：{{ item.budget > 0 ? ((item.actual / item.budget) * 100).toFixed(1) : 0 }}%</span>
+                <span :class="item.actual >= item.budget ? 'text-emerald-600 font-semibold' : 'text-slate-500'">
+                  {{ item.actual >= item.budget ? '✓ 已達標' : '待入帳: NT$ ' + formatNumber(item.budget - item.actual) }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 月度日常支出項目 -->
+        <div class="space-y-3 pt-4 border-t border-slate-100">
+          <h3 class="text-sm font-bold text-slate-800 bg-slate-100 px-3 py-1.5 rounded-lg inline-block">
+            📉 月度日常生活支出（手動預算上限管制）
+          </h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div v-for="item in monthlyExpenseComparisonList" :key="item.category" class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-1.5">
+              <div class="flex justify-between items-center text-xs">
+                <span class="font-bold text-slate-800">{{ item.category }}</span>
+                <div class="flex items-center gap-2">
+                  <span>實支: <strong :class="item.actual > item.budget ? 'text-red-500' : 'text-slate-900'">NT$ {{ formatNumber(item.actual) }}</strong></span>
+                  <span class="text-slate-400">/ 上限: NT$</span>
+                  <input type="number" v-model.number="monthlyExpenseBudgets[item.category]" @change="saveToCloud" class="w-24 border rounded px-1.5 py-0.5 text-right bg-white font-medium">
+                </div>
+              </div>
+              <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                <div 
+                  :class="item.actual > item.budget ? 'bg-red-500' : 'bg-blue-600'" 
+                  class="h-full rounded-full transition-all" 
+                  :style="{ width: Math.min(100, item.budget > 0 ? (item.actual / item.budget) * 100 : 0) + '%' }">
+                </div>
+              </div>
+              <div class="flex justify-between text-[11px]">
+                <span class="text-slate-400">執行率：{{ item.budget > 0 ? ((item.actual / item.budget) * 100).toFixed(1) : 0 }}%</span>
+                <span :class="item.budget - item.actual >= 0 ? 'text-emerald-600 font-medium' : 'text-red-500 font-bold'">
+                  {{ item.budget - item.actual >= 0 ? '剩餘: NT$ ' + formatNumber(item.budget - item.actual) : '⚠️ 超支: NT$ ' + formatNumber(item.actual - item.budget) }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 2: 年度收支預算 (含房車貸與保險) ==================== -->
+    <section v-if="activeTab === 'annual'" class="space-y-6">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- 全年預期總收入 -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+          <span class="text-xs font-semibold text-indigo-500">全年預期總收入 (預算)</span>
+          <div class="text-2xl font-bold text-slate-800 mt-1">NT$ {{ formatNumber(annualTotalIncomeBudget) }}</div>
+          <div class="text-xs text-slate-500 mt-2">
+            全年度實際已入帳：<strong class="text-emerald-600 font-bold">NT$ {{ formatNumber(annualActualIncomeTotal) }}</strong>
+          </div>
+        </div>
+
+        <!-- 全年預算總支出 -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+          <span class="text-xs font-semibold text-indigo-500">全年預期總支出 (預算)</span>
+          <div class="text-2xl font-bold text-slate-800 mt-1">NT$ {{ formatNumber(annualTotalExpenseBudget) }}</div>
+          <div class="text-xs text-slate-500 mt-2">
+            全年度實際已支出：<strong class="text-slate-800 font-bold">NT$ {{ formatNumber(annualActualExpenseTotal) }}</strong>
+          </div>
+        </div>
+
+        <!-- 全年預計淨儲蓄 -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+          <span class="text-xs font-semibold text-indigo-500">全年預計淨儲蓄 (結餘)</span>
+          <div class="text-2xl font-bold mt-1" :class="annualBudgetSurplus >= 0 ? 'text-indigo-600' : 'text-red-500'">
+            {{ annualBudgetSurplus >= 0 ? '+' : '' }} NT$ {{ formatNumber(annualBudgetSurplus) }}
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            預計儲蓄率：{{ annualTotalIncomeBudget > 0 ? ((annualBudgetSurplus / annualTotalIncomeBudget) * 100).toFixed(1) : 0 }}%
+          </div>
+        </div>
+
+        <!-- 全年實際累積淨結餘 -->
+        <div class="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+          <span class="text-xs font-semibold text-indigo-500">全年實際累積淨結餘</span>
+          <div class="text-2xl font-bold mt-1" :class="annualActualSurplus >= 0 ? 'text-emerald-600' : 'text-red-500'">
+            {{ annualActualSurplus >= 0 ? '+' : '' }} NT$ {{ formatNumber(annualActualSurplus) }}
+          </div>
+          <div class="text-xs text-slate-400 mt-2">
+            {{ selectedYear }} 年度累積現金流
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-6">
+        <div class="flex justify-between items-center flex-wrap gap-2">
+          <div>
+            <h2 class="text-lg font-bold text-slate-900">年度重點支出與常態結算 ({{ selectedYear }} 年)</h2>
+            <p class="text-xs text-slate-500 mt-0.5">房貸、車貸、人身保險與年度稅費統一在此進行全年度額度控管</p>
+          </div>
+          <div class="flex items-center gap-2 text-sm text-slate-600">
+            <span>統計年份：</span>
+            <input type="number" v-model.number="selectedYear" class="w-24 border rounded-lg px-2.5 py-1 bg-slate-50 text-sm font-semibold">
+          </div>
+        </div>
+
+        <!-- 年度三大固定項目 -->
+        <div class="space-y-3">
+          <h3 class="text-sm font-bold text-indigo-900 bg-indigo-50 px-3 py-1.5 rounded-lg inline-block">
+            📌 年度三大固定項目（房貸、車貸、人身保險）
+          </h3>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div v-for="item in annualMajorComparisonList" :key="item.category" class="p-4 rounded-xl border-2 border-indigo-100 bg-indigo-50/20 space-y-2">
+              <div class="flex justify-between items-center">
+                <span class="font-bold text-slate-800 text-sm">{{ item.category }}</span>
+                <span class="text-[11px] px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 font-semibold">年度專屬</span>
+              </div>
+              <div class="flex items-baseline justify-between text-xs">
+                <span class="text-slate-500">本年已繳：<strong class="text-slate-900 text-sm font-bold">NT$ {{ formatNumber(item.actual) }}</strong></span>
+                <div class="flex items-center gap-1">
+                  <span class="text-slate-400">年預算:</span>
+                  <input type="number" v-model.number="annualSpecialBudgets[item.category]" @change="saveToCloud" class="w-24 border rounded px-1.5 py-0.5 text-right bg-white font-bold text-indigo-700">
+                </div>
+              </div>
+              <div class="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden">
+                <div 
+                  :class="item.actual > item.budget ? 'bg-red-500' : 'bg-indigo-600'" 
+                  class="h-full rounded-full transition-all" 
+                  :style="{ width: Math.min(100, item.budget > 0 ? (item.actual / item.budget) * 100 : 0) + '%' }">
+                </div>
+              </div>
+              <div class="flex justify-between text-xs pt-0.5">
+                <span class="text-slate-400">繳納進度：{{ item.budget > 0 ? ((item.actual / item.budget) * 100).toFixed(1) : 0 }}%</span>
+                <span :class="item.budget - item.actual >= 0 ? 'text-indigo-600 font-medium' : 'text-red-500 font-bold'">
+                  {{ item.budget - item.actual >= 0 ? '剩餘: NT$ ' + formatNumber(item.budget - item.actual) : '⚠️ 已超支: NT$ ' + formatNumber(item.actual - item.budget) }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 年度稅費 -->
+        <div class="space-y-3 pt-4 border-t border-slate-100">
+          <h3 class="text-sm font-bold text-slate-800 bg-slate-100 px-3 py-1.5 rounded-lg inline-block">
+            📑 年度稅務與牌照燃料費
+          </h3>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div v-for="item in annualTaxComparisonList" :key="item.category" class="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-1.5">
+              <div class="flex justify-between items-center text-xs">
+                <span class="font-bold text-slate-800">{{ item.category }}</span>
+              </div>
+              <div class="flex items-center justify-between text-xs">
+                <span class="text-slate-500">已繳: <strong class="text-slate-800 font-semibold">NT$ {{ formatNumber(item.actual) }}</strong></span>
+                <div class="flex items-center gap-1">
+                  <span class="text-slate-400">年限額:</span>
+                  <input type="number" v-model.number="annualSpecialBudgets[item.category]" @change="saveToCloud" class="w-20 border rounded px-1 py-0.5 text-right bg-white font-medium">
+                </div>
+              </div>
+              <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                <div :class="item.actual > item.budget ? 'bg-red-500' : 'bg-blue-600'" class="h-full rounded-full transition-all" :style="{ width: Math.min(100, item.budget > 0 ? (item.actual / item.budget) * 100 : 0) + '%' }"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 全年常態彙整說明卡片 -->
+        <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-600 space-y-1">
+          <div class="font-bold text-slate-800">💡 年度預算計算說明：</div>
+          <div>1. 全年常態日常支出預算 = 月度日常支出預算 (NT$ {{ formatNumber(monthlyExpenseBudgetTotal) }}) × 12 個月 = <strong>NT$ {{ formatNumber(monthlyExpenseBudgetTotal * 12) }}</strong>。</div>
+          <div>2. 全年獨立大額固定支出（房貸＋車貸＋保險）= <strong>NT$ {{ formatNumber(annualMajorBudgetTotal) }}</strong>。</div>
+          <div>3. 全年稅金規費預算 = <strong>NT$ {{ formatNumber(annualTaxBudgetTotal) }}</strong>。</div>
+          <div class="pt-1 text-indigo-700 font-semibold">
+            👉 全年總支出預算合計為：NT$ {{ formatNumber(annualTotalExpenseBudget) }}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 3: 逐日記帳與互轉流水 ==================== -->
+    <section v-if="activeTab === 'transactions'" class="space-y-6">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- 記帳與轉帳表單 -->
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 md:col-span-1 space-y-4">
+          <h2 class="text-lg font-bold text-slate-900">記錄一筆收支 / 內部轉帳</h2>
+          <form @submit.prevent="addTransaction" class="space-y-3.5 text-xs">
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">交易日期</label>
+              <input type="date" v-model="txForm.date" class="w-full border rounded-xl p-2.5 text-sm bg-slate-50" required>
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">交易類型</label>
+              <select v-model="txForm.type" class="w-full border rounded-xl p-2.5 text-sm bg-slate-50 font-medium">
+                <option value="withdraw">支出 / 扣繳 / 奉獻 / 貸款 (-)</option>
+                <option value="deposit">收入 / 年金 / 股利 (+)</option>
+                <option value="transfer">🔄 內部轉帳（轉入共用/其他帳戶）</option>
+              </select>
+            </div>
+
+            <!-- 來源帳戶 / 轉出帳戶 -->
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">
+                {{ txForm.type === 'transfer' ? '轉出帳戶 (扣款戶)' : '對應帳戶 / 支付方式' }}
+              </label>
+              <select v-model="txForm.accountId" class="w-full border rounded-xl p-2.5 text-sm bg-slate-50" required>
+                <option v-for="acc in accounts" :key="acc.id" :value="acc.id">
+                  {{ acc.holder }} - {{ acc.name }} (現值: ${{ formatNumber(acc.balance) }})
+                </option>
+              </select>
+            </div>
+
+            <!-- 目標帳戶 (僅內部轉帳顯示) -->
+            <div v-if="txForm.type === 'transfer'">
+              <label class="block font-semibold text-indigo-700 mb-1">轉入目標帳戶 (收款戶)</label>
+              <select v-model="txForm.targetAccountId" class="w-full border-2 border-indigo-200 rounded-xl p-2.5 text-sm bg-indigo-50 font-bold text-indigo-900" required>
+                <option v-for="acc in availableTargetAccounts" :key="acc.id" :value="acc.id">
+                  {{ acc.holder }} - {{ acc.name }} (現值: ${{ formatNumber(acc.balance) }})
+                </option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">收支 / 調度項目</label>
+              <select v-model="txForm.category" class="w-full border rounded-xl p-2.5 text-sm bg-slate-50 font-medium">
+                <option v-for="cat in currentCategories" :key="cat" :value="cat">{{ cat }}</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">金額 (NT$)</label>
+              <input type="number" v-model.number="txForm.amount" min="1" placeholder="請手動輸入金額" class="w-full border rounded-xl p-2.5 text-sm bg-slate-50" required>
+            </div>
+
+            <div>
+              <label class="block font-semibold text-slate-600 mb-1">備註說明</label>
+              <input type="text" v-model="txForm.note" placeholder="例如：由彰銀撥入共用公費帳戶" class="w-full border rounded-xl p-2.5 text-sm bg-slate-50">
+            </div>
+
+            <button type="submit" 
+              :class="txForm.type === 'transfer' ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-blue-600 hover:bg-blue-700'"
+              class="w-full text-white font-medium py-2.5 rounded-xl text-sm transition">
+              {{ txForm.type === 'transfer' ? '確認內部轉帳並同步' : '確認記帳並同步雲端' }}
+            </button>
+          </form>
+        </div>
+
+        <!-- 歷史流水清單 -->
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 md:col-span-2 space-y-4">
+          <div class="flex justify-between items-center flex-wrap gap-2">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">收支與調度交易明細表</h2>
+              <p class="text-xs text-slate-400">內部轉帳以「⇄ 藍紫色」標記，不影響常規收入與日常超支統計</p>
+            </div>
+            <div class="flex items-center gap-2 text-xs text-slate-600">
+              <span>月份：</span>
+              <input type="month" v-model="selectedMonth" class="border rounded-lg px-2 py-1 bg-slate-50 text-xs">
+            </div>
+          </div>
+
+          <div class="overflow-x-auto max-h-[520px]">
+            <table class="w-full text-left text-xs">
+              <thead class="sticky top-0 bg-white border-b border-slate-200 text-slate-400">
+                <tr>
+                  <th class="py-2.5 px-2">日期</th>
+                  <th class="py-2.5 px-2">對應/轉出帳戶</th>
+                  <th class="py-2.5 px-2">類別</th>
+                  <th class="py-2.5 px-2">備註</th>
+                  <th class="py-2.5 px-2 text-right">金額</th>
+                  <th class="py-2.5 px-2 text-center">操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100">
+                <tr v-for="item in filteredTransactions" :key="item.id" class="hover:bg-slate-50">
+                  <td class="py-2.5 px-2 text-slate-800 font-medium whitespace-nowrap">{{ item.date }}</td>
+                  <td class="py-2.5 px-2 text-slate-600 whitespace-nowrap">
+                    <span v-if="item.type === 'transfer'" class="flex items-center gap-1 font-medium text-indigo-800">
+                      <span>{{ getAccountName(item.accountId) }}</span>
+                      <span class="text-indigo-400">➔</span>
+                      <span>{{ getAccountName(item.targetAccountId) }}</span>
+                    </span>
+                    <span v-else>{{ getAccountName(item.accountId) }}</span>
+                  </td>
+                  <td class="py-2.5 px-2 whitespace-nowrap">
+                    <span :class="item.type === 'transfer' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-700'" class="px-2 py-0.5 rounded font-medium">
+                      {{ item.category }}
+                    </span>
+                  </td>
+                  <td class="py-2.5 px-2 text-slate-500 max-w-[160px] truncate">{{ item.note || '-' }}</td>
+                  <td class="py-2.5 px-2 text-right font-bold whitespace-nowrap" 
+                      :class="item.type === 'deposit' ? 'text-emerald-600' : (item.type === 'transfer' ? 'text-indigo-600' : 'text-slate-800')">
+                    {{ item.type === 'deposit' ? '+' : (item.type === 'transfer' ? '⇄' : '-') }} NT$ {{ formatNumber(item.amount) }}
+                  </td>
+                  <td class="py-2.5 px-2 text-center whitespace-nowrap">
+                    <button @click="deleteTransaction(item)" class="text-red-500 hover:text-red-700">刪除</button>
+                  </td>
+                </tr>
+                <tr v-if="filteredTransactions.length === 0">
+                  <td colspan="6" class="py-8 text-center text-slate-400">目前月份尚無收支明細</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 4: 資產盤點 ==================== -->
+    <section v-if="activeTab === 'accounts'" class="space-y-6">
+      <div class="flex justify-between items-center flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <h2 class="text-base font-bold text-slate-800">資產帳戶清單（手動維護金額，修改後秒級同步）</h2>
+          <div class="flex gap-1 text-xs">
+            <button 
+              v-for="owner in ['全部', '共用', '兆嘉', '美伊']" 
+              :key="owner"
+              @click="filterOwner = owner"
+              :class="filterOwner === owner ? 'bg-slate-800 text-white font-bold' : 'bg-slate-200 text-slate-600'"
+              class="px-2.5 py-1 rounded-md font-medium transition">
+              {{ owner }}
+            </button>
+          </div>
+        </div>
+        <span class="text-xs text-slate-400">所有帳戶均可點「修改金額」直接填寫最新存款或市值</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div v-for="acc in filteredAccounts" :key="acc.id" 
+          :class="acc.holder === '共用' ? 'border-2 border-indigo-300 bg-indigo-50/20 shadow-sm' : 'border border-slate-200 bg-white shadow-sm'"
+          class="p-4 rounded-2xl">
+          <div class="flex justify-between items-start mb-1.5">
+            <div>
+              <div class="flex items-center gap-1.5">
+                <h3 class="font-bold text-slate-800 text-sm">{{ acc.name }}</h3>
+                <span v-if="acc.holder === '共用'" class="text-[10px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-bold">共用</span>
+              </div>
+              <p class="text-[11px] text-slate-400">持有人：{{ acc.holder }} ‧ {{ acc.type }}</p>
+            </div>
+            <button 
+              @click="toggleEditBalance(acc)" 
+              class="text-xs px-2 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100 transition">
+              {{ acc.isEditing ? '儲存' : '修改金額' }}
+            </button>
+          </div>
+
+          <div class="mt-3">
+            <span class="text-[11px] text-slate-400">目前金額 / 市值</span>
+            <div v-if="!acc.isEditing" class="text-xl font-bold" :class="acc.holder === '共用' ? 'text-indigo-700' : 'text-slate-900'">
+              NT$ {{ formatNumber(acc.balance) }}
+            </div>
+            <div v-else class="flex items-center gap-1 mt-1">
+              <span class="text-xs font-bold text-slate-500">NT$</span>
+              <input 
+                type="number" 
+                v-model.number="acc.editValue" 
+                class="w-full border-2 border-blue-500 rounded-lg px-2 py-0.5 text-base font-bold text-slate-900 bg-blue-50 focus:outline-none"
+                @keyup.enter="toggleEditBalance(acc)">
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 雲端 Firebase 金鑰設定視窗 (Modal) ==================== -->
+    <div v-if="showConfigModal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 space-y-4">
+        <div class="flex justify-between items-center border-b pb-3">
+          <h3 class="text-lg font-bold text-slate-900">🔑 設定 Firebase 雙人即時同步金鑰</h3>
+          <button @click="showConfigModal = false" class="text-slate-400 hover:text-slate-600 font-bold text-lg">&times;</button>
+        </div>
+        <p class="text-xs text-slate-500 leading-relaxed">
+          請在下方填入 Google Firebase 控制台複製的設定參數。兩人手機只要填入**相同的設定**，無論身在何處記帳或撥款，都能秒級自動即時雙向同步！
+        </p>
+
+        <div class="space-y-2.5 text-xs">
+          <div>
+            <label class="block font-semibold text-slate-700 mb-1">apiKey</label>
+            <input type="text" v-model="fbConfigInput.apiKey" placeholder="AIzaSy..." class="w-full border rounded-lg p-2 bg-slate-50">
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block font-semibold text-slate-700 mb-1">projectId</label>
+              <input type="text" v-model="fbConfigInput.projectId" placeholder="family-finance-xxx" class="w-full border rounded-lg p-2 bg-slate-50">
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-700 mb-1">authDomain</label>
+              <input type="text" v-model="fbConfigInput.authDomain" placeholder="xxx.firebaseapp.com" class="w-full border rounded-lg p-2 bg-slate-50">
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block font-semibold text-slate-700 mb-1">storageBucket</label>
+              <input type="text" v-model="fbConfigInput.storageBucket" placeholder="xxx.appspot.com" class="w-full border rounded-lg p-2 bg-slate-50">
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-700 mb-1">appId</label>
+              <input type="text" v-model="fbConfigInput.appId" placeholder="1:123456:web:xxx" class="w-full border rounded-lg p-2 bg-slate-50">
+            </div>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2 pt-3 border-t">
+          <button @click="showConfigModal = false" class="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-semibold">取消</button>
+          <button @click="saveFirebaseConfig" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold transition">儲存並啟動即時同步</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const { createApp, ref, computed, watch, onMounted } = Vue;
+
+    createApp({
+      setup() {
+        const activeTab = ref('monthly');
+        const filterOwner = ref('全部');
+        const isCloudConnected = ref(false);
+        const showConfigModal = ref(false);
+
+        let db = null;
+        let unsubscribeSnapshot = null;
+
+        const fbConfigInput = ref({
+          apiKey: '',
+          authDomain: '',
+          projectId: '',
+          storageBucket: '',
+          messagingSenderId: '',
+          appId: ''
+        });
+
+        const getTodayString = () => {
+          const d = new Date();
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        };
+
+        const getThisMonthString = () => {
+          const d = new Date();
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        };
+
+        const selectedMonth = ref(getThisMonthString());
+        const selectedYear = ref(new Date().getFullYear());
+
+        // 1. 月度日常支出項目 (已排除房貸、車貸、保險與年度大額稅費)
+        const monthlyExpenseCategories = ref([
+          '日常食材與餐飲',
+          '衣帽鞋襪',
+          '水費 (彰銀扣款)',
+          '電費 (彰銀扣款)',
+          '瓦斯費 (彰銀扣款)',
+          '電信網路費 (彰銀扣款)',
+          '管理費',
+          '日用品',
+          '加油費',
+          '停車費',
+          '保養檢驗費',
+          '健身',
+          '運動',
+          '戶外爬山',
+          '醫療',
+          '旅遊',
+          '日用雜支',
+          '玉山信用卡 (彰銀轉帳)',
+          '台新信用卡 (彰銀轉帳)',
+          '星展信用卡 (彰銀轉帳)',
+          '北富銀信用卡 (自行轉帳)',
+          '國泰信用卡 (自行轉帳)',
+          '美伊-漢神中信信用卡',
+          '美伊-玉山麗寶信用卡',
+          '美伊-中信MUJI信用卡',
+          '美伊-台新信用卡',
+          '兆嘉-主日奉獻',
+          '兆嘉-十一奉獻',
+          '兆嘉-按月奉獻',
+          '兆嘉-感恩奉獻',
+          '美伊-主日奉獻',
+          '美伊-十一奉獻',
+          '美伊-按月奉獻',
+          '美伊-感恩奉獻'
+        ]);
+
+        // 2. 獨立年度支出項目
+        const annualMajorCategories = ref([
+          '房貸 (獨立)',
+          '車貸 (獨立)',
+          '人身保險'
+        ]);
+
+        const annualTaxCategories = ref([
+          '地價稅',
+          '房屋稅',
+          '牌照稅',
+          '燃料費'
+        ]);
+
+        const allExpenseCategories = computed(() => {
+          return [...monthlyExpenseCategories.value, ...annualMajorCategories.value, ...annualTaxCategories.value];
+        });
+
+        // 3. 收入項目
+        const incomeCategories = ref([
+          '兆嘉-勞保年金',
+          '兆嘉-獎金',
+          '兆嘉-兼職收入',
+          '兆嘉-股利收入',
+          '美伊-勞保年金',
+          '美伊-獎金',
+          '美伊-兼職收入',
+          '美伊-股利收入',
+          '其他收入'
+        ]);
+
+        // 轉帳調度項目
+        const transferCategories = ref([
+          '生活公費撥款',
+          '家庭共用備用金',
+          '理財與證券資金調度',
+          '其他帳戶互轉'
+        ]);
+
+        // 4. 月度支出手動預算
+        const monthlyExpenseBudgets = ref({
+          '日常食材與餐飲': 26000,
+          '衣帽鞋襪': 3000,
+          '水費 (彰銀扣款)': 400,
+          '電費 (彰銀扣款)': 2500,
+          '瓦斯費 (彰銀扣款)': 1000,
+          '電信網路費 (彰銀扣款)': 2200,
+          '管理費': 2500,
+          '日用品': 3000,
+          '加油費': 4500,
+          '停車費': 1500,
+          '保養檢驗費': 2000,
+          '健身': 1000,
+          '運動': 1000,
+          '戶外爬山': 1500,
+          '醫療': 2000,
+          '旅遊': 8000,
+          '日用雜支': 3000,
+          '玉山信用卡 (彰銀轉帳)': 5000,
+          '台新信用卡 (彰銀轉帳)': 5000,
+          '星展信用卡 (彰銀轉帳)': 3000,
+          '北富銀信用卡 (自行轉帳)': 3000,
+          '國泰信用卡 (自行轉帳)': 5000,
+          '美伊-漢神中信信用卡': 5000,
+          '美伊-玉山麗寶信用卡': 3000,
+          '美伊-中信MUJI信用卡': 3000,
+          '美伊-台新信用卡': 3000,
+          '兆嘉-主日奉獻': 2000,
+          '兆嘉-十一奉獻': 6000,
+          '兆嘉-按月奉獻': 2000,
+          '兆嘉-感恩奉獻': 1000,
+          '美伊-主日奉獻': 2000,
+          '美伊-十一奉獻': 6000,
+          '美伊-按月奉獻': 2000,
+          '美伊-感恩奉獻': 1000
+        });
+
+        // 5. 年度獨立支出手動預算
+        const annualSpecialBudgets = ref({
+          '房貸 (獨立)': 300000,
+          '車貸 (獨立)': 144000,
+          '人身保險': 180000,
+          '地價稅': 10000,
+          '房屋稅': 12000,
+          '牌照稅': 21600,
+          '燃料費': 7200
+        });
+
+        // 6. 月度收入手動預算
+        const monthlyIncomeBudgets = ref({
+          '兆嘉-勞保年金': 48000,
+          '兆嘉-獎金': 0,
+          '兆嘉-兼職收入': 0,
+          '兆嘉-股利收入': 15000,
+          '美伊-勞保年金': 35000,
+          '美伊-獎金': 0,
+          '美伊-兼職收入': 20000,
+          '美伊-股利收入': 12000,
+          '其他收入': 0
+        });
+
+        // 7. 完整帳戶資產清單 (加入共用帳戶)
+        const accounts = ref([
+          // ⭐️ 共用公費帳戶
+          { id: 99, holder: '共用', type: '銀行活儲', name: '家庭公費共用帳戶', balance: 0 },
+
+          { id: 1, holder: '兆嘉', type: '銀行活儲', name: '台銀潭子活儲', balance: 0 },
+          { id: 2, holder: '兆嘉', type: '外匯存款', name: '台銀潭子外匯綜合', balance: 0 },
+          { id: 3, holder: '兆嘉', type: '銀行活儲', name: '國泰潭子活儲', balance: 0 },
+          { id: 4, holder: '兆嘉', type: '郵局儲金', name: '郵局儲金活儲', balance: 0 },
+          { id: 5, holder: '兆嘉', type: '銀行活儲', name: '台中銀東豐原活存', balance: 0 },
+          { id: 6, holder: '兆嘉', type: '銀行活儲', name: '台中銀潭子活存', balance: 0 },
+          { id: 7, holder: '兆嘉', type: '銀行活儲', name: '台中銀南陽活存', balance: 0 },
+          { id: 8, holder: '兆嘉', type: '銀行活儲', name: '永豐金銀行', balance: 0 },
+          { id: 9, holder: '兆嘉', type: '銀行活儲', name: '彰銀豐原活儲 (自動扣款戶)', balance: 0 },
+          { id: 10, holder: '兆嘉', type: '銀行活儲', name: '元大銀行', balance: 0 },
+          { id: 11, holder: '兆嘉', type: '銀行活儲', name: '兆豐銀行', balance: 0 },
+          { id: 12, holder: '兆嘉', type: '銀行活儲', name: '台新銀行', balance: 0 },
+          { id: 13, holder: '兆嘉', type: '銀行活儲', name: '土地銀行', balance: 0 },
+          { id: 14, holder: '兆嘉', type: '證券交割', name: '一戶通帳戶', balance: 0 },
+          { id: 15, holder: '兆嘉', type: '股票證券', name: '群益證券 (股票市值)', balance: 0 },
+          { id: 16, holder: '兆嘉', type: '股票證券', name: '元大證券 (股票市值)', balance: 0 },
+          { id: 17, holder: '兆嘉', type: '股票證券', name: '富邦證券 (股票市值)', balance: 0 },
+          { id: 18, holder: '兆嘉', type: '股票證券', name: '國泰證券 (股票市值)', balance: 0 },
+          { id: 19, holder: '兆嘉', type: '複委託', name: '永豐金美股', balance: 0 },
+          { id: 20, holder: '兆嘉', type: '基金平台', name: '基富通 (基金現值)', balance: 0 },
+          { id: 21, holder: '兆嘉', type: '基金平台', name: '中租基金 (基金現值)', balance: 0 },
+          { id: 22, holder: '兆嘉', type: '基金平台', name: '電支雞 (基金現值)', balance: 0 },
+
+          { id: 23, holder: '美伊', type: '外匯存款', name: '台銀外匯綜合存款', balance: 0 },
+          { id: 24, holder: '美伊', type: '銀行活儲', name: '台銀活儲', balance: 0 },
+          { id: 25, holder: '美伊', type: '定期存款', name: '台銀外匯綜合定存', balance: 0 },
+          { id: 26, holder: '美伊', type: '證券交割', name: '星展證券活儲', balance: 0 },
+          { id: 27, holder: '美伊', type: '銀行活儲', name: '星展活儲', balance: 0 },
+          { id: 28, holder: '美伊', type: '銀行活儲', name: '台中銀東豐原活存', balance: 0 },
+          { id: 29, holder: '美伊', type: '綜合存款', name: '台中銀南陽綜合存款', balance: 0 },
+          { id: 30, holder: '美伊', type: '銀行活儲', name: '台中銀南陽活存', balance: 0 },
+          { id: 31, holder: '美伊', type: '銀行活儲', name: '台中銀潭子活存', balance: 0 },
+          { id: 32, holder: '美伊', type: '郵局儲金', name: '郵局儲金活儲', balance: 0 },
+          { id: 33, holder: '美伊', type: '銀行活儲', name: '合庫銀', balance: 0 },
+          { id: 34, holder: '美伊', type: '銀行活儲', name: '台新銀行', balance: 0 },
+          { id: 35, holder: '美伊', type: '銀行活儲', name: '北富銀', balance: 0 },
+          { id: 36, holder: '美伊', type: '銀行活儲', name: '國泰銀', balance: 0 },
+          { id: 37, holder: '美伊', type: '證券交割', name: '一戶通帳戶', balance: 0 },
+          { id: 38, holder: '美伊', type: '股票證券', name: '群益證券 (股票市值)', balance: 0 },
+          { id: 39, holder: '美伊', type: '股票證券', name: '元大證券 (股票市值)', balance: 0 },
+          { id: 40, holder: '美伊', type: '股票證券', name: '國泰證券 (股票市值)', balance: 0 },
+          { id: 41, holder: '美伊', type: '基金平台', name: '基富通 (基金現值)', balance: 0 },
+          { id: 42, holder: '美伊', type: '基金平台', name: '合庫基金 (基金現值)', balance: 0 }
+        ].map(a => ({ ...a, isEditing: false, editValue: a.balance })));
+
+        const transactions = ref([]);
+
+        const txForm = ref({
+          date: getTodayString(),
+          accountId: 9,
+          targetAccountId: 99, // 預設轉入共用帳戶
+          type: 'withdraw',
+          category: '日常食材與餐飲',
+          amount: null,
+          note: ''
+        });
+
+        // 依據交易類型動態切換可選類別
+        const currentCategories = computed(() => {
+          if (txForm.value.type === 'transfer') return transferCategories.value;
+          return txForm.value.type === 'withdraw' ? allExpenseCategories.value : incomeCategories.value;
+        });
+
+        // 轉帳目標帳戶排除目前轉出帳戶
+        const availableTargetAccounts = computed(() => {
+          return accounts.value.filter(a => a.id !== Number(txForm.value.accountId));
+        });
+
+        watch(() => txForm.value.type, (newType) => {
+          if (newType === 'transfer') {
+            txForm.value.category = transferCategories.value[0];
+            if (txForm.value.accountId === txForm.value.targetAccountId) {
+              const another = accounts.value.find(a => a.id !== txForm.value.accountId);
+              if (another) txForm.value.targetAccountId = another.id;
+            }
+          } else if (newType === 'withdraw') {
+            txForm.value.category = allExpenseCategories.value[0];
+          } else {
+            txForm.value.category = incomeCategories.value[0];
+          }
+        });
+
+        const filteredAccounts = computed(() => {
+          if (filterOwner.value === '全部') return accounts.value;
+          return accounts.value.filter(a => a.holder === filterOwner.value);
+        });
+
+        const totalAssets = computed(() => {
+          return accounts.value.reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+        });
+
+        const filteredTransactions = computed(() => {
+          return transactions.value
+            .filter(t => !selectedMonth.value || t.date.startsWith(selectedMonth.value))
+            .sort((a, b) => new Date(b.date) - new Date(a.date));
+        });
+
+        // 月度比對計算 (排除了 transfer 轉帳)
+        const monthlyIncomeComparisonList = computed(() => {
+          const monthlyIncomes = transactions.value.filter(t => 
+            t.type === 'deposit' && (!selectedMonth.value || t.date.startsWith(selectedMonth.value))
+          );
+          return incomeCategories.value.map(cat => {
+            const actual = monthlyIncomes.filter(t => t.category === cat).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+            return {
+              category: cat,
+              budget: Number(monthlyIncomeBudgets.value[cat]) || 0,
+              actual: actual
+            };
+          });
+        });
+
+        const monthlyExpenseComparisonList = computed(() => {
+          const monthlyExpenses = transactions.value.filter(t => 
+            t.type === 'withdraw' && (!selectedMonth.value || t.date.startsWith(selectedMonth.value))
+          );
+          return monthlyExpenseCategories.value.map(cat => {
+            const actual = monthlyExpenses.filter(t => t.category === cat).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+            return {
+              category: cat,
+              budget: Number(monthlyExpenseBudgets.value[cat]) || 0,
+              actual: actual
+            };
+          });
+        });
+
+        const overBudgetExpenses = computed(() => {
+          return monthlyExpenseComparisonList.value.filter(item => item.budget > 0 && item.actual > item.budget);
+        });
+
+        const monthlyIncomeBudgetTotal = computed(() => {
+          return Object.values(monthlyIncomeBudgets.value).reduce((sum, v) => sum + (Number(v) || 0), 0);
+        });
+
+        const monthlyActualIncomeTotal = computed(() => {
+          return monthlyIncomeComparisonList.value.reduce((sum, item) => sum + item.actual, 0);
+        });
+
+        const monthlyExpenseBudgetTotal = computed(() => {
+          return Object.values(monthlyExpenseBudgets.value).reduce((sum, v) => sum + (Number(v) || 0), 0);
+        });
+
+        const monthlyActualExpenseTotal = computed(() => {
+          return monthlyExpenseComparisonList.value.reduce((sum, item) => sum + item.actual, 0);
+        });
+
+        const monthlyBudgetSurplus = computed(() => {
+          return monthlyIncomeBudgetTotal.value - monthlyExpenseBudgetTotal.value;
+        });
+
+        const monthlyActualSurplus = computed(() => {
+          return monthlyActualIncomeTotal.value - monthlyActualExpenseTotal.value;
+        });
+
+        // 年度比對計算
+        const currentYearString = computed(() => String(selectedYear.value));
+
+        const annualMajorComparisonList = computed(() => {
+          const yearExpenses = transactions.value.filter(t => 
+            t.type === 'withdraw' && t.date.startsWith(currentYearString.value)
+          );
+          return annualMajorCategories.value.map(cat => {
+            const actual = yearExpenses.filter(t => t.category === cat).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+            return {
+              category: cat,
+              budget: Number(annualSpecialBudgets.value[cat]) || 0,
+              actual: actual
+            };
+          });
+        });
+
+        const annualTaxComparisonList = computed(() => {
+          const yearExpenses = transactions.value.filter(t => 
+            t.type === 'withdraw' && t.date.startsWith(currentYearString.value)
+          );
+          return annualTaxCategories.value.map(cat => {
+            const actual = yearExpenses.filter(t => t.category === cat).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+            return {
+              category: cat,
+              budget: Number(annualSpecialBudgets.value[cat]) || 0,
+              actual: actual
+            };
+          });
+        });
+
+        const annualTotalIncomeBudget = computed(() => {
+          return monthlyIncomeBudgetTotal.value * 12;
+        });
+
+        const annualActualIncomeTotal = computed(() => {
+          return transactions.value
+            .filter(t => t.type === 'deposit' && t.date.startsWith(currentYearString.value))
+            .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+        });
+
+        const annualMajorBudgetTotal = computed(() => {
+          return annualMajorCategories.value.reduce((sum, cat) => sum + (Number(annualSpecialBudgets.value[cat]) || 0), 0);
+        });
+
+        const annualTaxBudgetTotal = computed(() => {
+          return annualTaxCategories.value.reduce((sum, cat) => sum + (Number(annualSpecialBudgets.value[cat]) || 0), 0);
+        });
+
+        const annualTotalExpenseBudget = computed(() => {
+          return (monthlyExpenseBudgetTotal.value * 12) + annualMajorBudgetTotal.value + annualTaxBudgetTotal.value;
+        });
+
+        const annualActualExpenseTotal = computed(() => {
+          return transactions.value
+            .filter(t => t.type === 'withdraw' && t.date.startsWith(currentYearString.value))
+            .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+        });
+
+        const annualBudgetSurplus = computed(() => {
+          return annualTotalIncomeBudget.value - annualTotalExpenseBudget.value;
+        });
+
+        const annualActualSurplus = computed(() => {
+          return annualActualIncomeTotal.value - annualActualExpenseTotal.value;
+        });
+
+        const getAccountName = (accId) => {
+          const acc = accounts.value.find(a => a.id === accId);
+          return acc ? `${acc.holder}-${acc.name}` : '未指定';
+        };
+
+        const formatNumber = (val) => {
+          return (Number(val) || 0).toLocaleString('zh-TW');
+        };
+
+        // ------------------ Firebase 雲端與多人即時同步核心 ------------------
+        const saveToCloud = () => {
+          localStorage.setItem('family_accounts_cloud_v9', JSON.stringify(accounts.value));
+          localStorage.setItem('family_monthly_exp_budgets_cloud_v9', JSON.stringify(monthlyExpenseBudgets.value));
+          localStorage.setItem('family_annual_sp_budgets_cloud_v9', JSON.stringify(annualSpecialBudgets.value));
+          localStorage.setItem('family_monthly_inc_budgets_cloud_v9', JSON.stringify(monthlyIncomeBudgets.value));
+          localStorage.setItem('family_txs_cloud_v9', JSON.stringify(transactions.value));
+
+          if (db) {
+            db.collection('family_finance').doc('live_data').set({
+              accounts: accounts.value.map(a => ({
+                id: a.id,
+                holder: a.holder,
+                type: a.type,
+                name: a.name,
+                balance: a.balance
+              })),
+              monthlyExpenseBudgets: monthlyExpenseBudgets.value,
+              annualSpecialBudgets: annualSpecialBudgets.value,
+              monthlyIncomeBudgets: monthlyIncomeBudgets.value,
+              transactions: transactions.value,
+              updatedAt: Date.now()
+            }, { merge: true }).catch(err => {
+              console.error("Firebase 同步寫入失敗：", err);
+            });
+          }
+        };
+
+        const initFirestoreListener = () => {
+          if (!db) {
+            isCloudConnected.value = false;
+            return;
+          }
+
+          if (unsubscribeSnapshot) {
+            unsubscribeSnapshot();
+          }
+
+          unsubscribeSnapshot = db.collection('family_finance').doc('live_data').onSnapshot((doc) => {
+            if (doc.exists) {
+              const data = doc.data();
+              if (data.accounts) {
+                // 合併遠端帳戶資料，保持共用帳戶存在
+                const remoteAccounts = data.accounts;
+                if (!remoteAccounts.find(a => a.id === 99)) {
+                  remoteAccounts.unshift({ id: 99, holder: '共用', type: '銀行活儲', name: '家庭公費共用帳戶', balance: 0 });
+                }
+                accounts.value = remoteAccounts.map(a => ({
+                  ...a,
+                  isEditing: false,
+                  editValue: a.balance
+                }));
+              }
+              if (data.monthlyExpenseBudgets) monthlyExpenseBudgets.value = data.monthlyExpenseBudgets;
+              if (data.annualSpecialBudgets) annualSpecialBudgets.value = data.annualSpecialBudgets;
+              if (data.monthlyIncomeBudgets) monthlyIncomeBudgets.value = data.monthlyIncomeBudgets;
+              if (data.transactions) transactions.value = data.transactions;
+              isCloudConnected.value = true;
+            } else {
+              saveToCloud();
+              isCloudConnected.value = true;
+            }
+          }, (err) => {
+            console.warn("無法取得 Firebase 即時資料：", err);
+            isCloudConnected.value = false;
+          });
+        };
+
+        const saveFirebaseConfig = () => {
+          const cfg = fbConfigInput.value;
+          if (!cfg.apiKey || !cfg.projectId) {
+            alert('請至少填寫 apiKey 與 projectId！');
+            return;
+          }
+
+          localStorage.setItem('family_fb_config_v9', JSON.stringify(cfg));
+          try {
+            if (firebase.apps.length > 0) {
+              firebase.apps[0].delete();
+            }
+            firebase.initializeApp(cfg);
+            db = firebase.firestore();
+            initFirestoreListener();
+            showConfigModal.value = false;
+            alert('Firebase 連線成功！已啟動雙人即時同步監聽。');
+          } catch (err) {
+            alert('Firebase 初始化失敗，請檢查金鑰是否正確：' + err.message);
+          }
+        };
+
+        const toggleEditBalance = (acc) => {
+          if (acc.isEditing) {
+            const val = Number(acc.editValue);
+            if (isNaN(val) || val < 0) {
+              alert('請輸入有效金額！');
+              return;
+            }
+            acc.balance = val;
+            acc.isEditing = false;
+            saveToCloud();
+          } else {
+            acc.editValue = acc.balance;
+            acc.isEditing = true;
+          }
+        };
+
+        const addTransaction = () => {
+          const amt = Number(txForm.value.amount);
+          if (!amt || amt <= 0) {
+            alert('請輸入大於 0 的金額！');
+            return;
+          }
+
+          const fromAcc = accounts.value.find(a => a.id === Number(txForm.value.accountId));
+          if (!fromAcc) {
+            alert('請選擇轉出/扣款帳戶！');
+            return;
+          }
+
+          // 情況 A：內部轉帳
+          if (txForm.value.type === 'transfer') {
+            const toAcc = accounts.value.find(a => a.id === Number(txForm.value.targetAccountId));
+            if (!toAcc) {
+              alert('請選擇轉入目標帳戶！');
+              return;
+            }
+            if (fromAcc.id === toAcc.id) {
+              alert('轉出與轉入不可為同一個帳戶！');
+              return;
+            }
+
+            fromAcc.balance -= amt;
+            fromAcc.editValue = fromAcc.balance;
+            toAcc.balance += amt;
+            toAcc.editValue = toAcc.balance;
+
+            const newTx = {
+              id: Date.now(),
+              date: txForm.value.date,
+              accountId: fromAcc.id,
+              targetAccountId: toAcc.id,
+              type: 'transfer',
+              category: txForm.value.category,
+              amount: amt,
+              note: txForm.value.note || `由 ${fromAcc.name} 轉入 ${toAcc.name}`
+            };
+            transactions.value.unshift(newTx);
+            saveToCloud();
+
+            alert(`✅ 內部轉帳完成！\nNT$ ${formatNumber(amt)} 已由「${fromAcc.holder}-${fromAcc.name}」撥至「${toAcc.holder}-${toAcc.name}」` + (isCloudConnected.value ? '，並秒級同步雲端。' : '。'));
+          } 
+          // 情況 B：常態收支
+          else {
+            if (txForm.value.type === 'withdraw') {
+              fromAcc.balance -= amt;
+            } else {
+              fromAcc.balance += amt;
+            }
+            fromAcc.editValue = fromAcc.balance;
+
+            const newTx = {
+              id: Date.now(),
+              date: txForm.value.date,
+              accountId: fromAcc.id,
+              type: txForm.value.type,
+              category: txForm.value.category,
+              amount: amt,
+              note: txForm.value.note
+            };
+            transactions.value.unshift(newTx);
+            saveToCloud();
+
+            if (txForm.value.type === 'withdraw') {
+              const currentCatItem = monthlyExpenseComparisonList.value.find(c => c.category === txForm.value.category);
+              if (currentCatItem && currentCatItem.budget > 0 && currentCatItem.actual > currentCatItem.budget) {
+                alert(`⚠️【月度超支警示】\n「${txForm.value.category}」本月累計支出已達 NT$ ${formatNumber(currentCatItem.actual)}，超出月預算上限 NT$ ${formatNumber(currentCatItem.budget)}！`);
+              } else {
+                alert('記帳成功！' + (isCloudConnected.value ? '已即時同步至所有成員手機。' : ''));
+              }
+            } else {
+              alert('收入紀錄已新增！' + (isCloudConnected.value ? '已即時同步至所有成員手機。' : ''));
+            }
+          }
+
+          txForm.value.amount = null;
+          txForm.value.note = '';
+        };
+
+        const deleteTransaction = (item) => {
+          if (!confirm(`確定要刪除這筆 NT$ ${formatNumber(item.amount)} 的紀錄嗎？相關帳戶餘額將自動回滾校正。`)) return;
+
+          if (item.type === 'transfer') {
+            const fromAcc = accounts.value.find(a => a.id === item.accountId);
+            const toAcc = accounts.value.find(a => a.id === item.targetAccountId);
+            if (fromAcc) {
+              fromAcc.balance += item.amount;
+              fromAcc.editValue = fromAcc.balance;
+            }
+            if (toAcc) {
+              toAcc.balance -= item.amount;
+              toAcc.editValue = toAcc.balance;
+            }
+          } else {
+            const acc = accounts.value.find(a => a.id === item.accountId);
+            if (acc) {
+              if (item.type === 'withdraw') acc.balance += item.amount;
+              else acc.balance -= item.amount;
+              acc.editValue = acc.balance;
+            }
+          }
+
+          transactions.value = transactions.value.filter(t => t.id !== item.id);
+          saveToCloud();
+        };
+
+        const exportCSV = () => {
+          let csvContent = '\uFEFF日期,類型,轉出/扣繳帳戶,轉入帳戶,收支調度項目,金額,備註\n';
+          transactions.value.forEach(t => {
+            const fromAcc = accounts.value.find(a => a.id === t.accountId);
+            const toAcc = accounts.value.find(a => a.id === t.targetAccountId);
+            const fromStr = fromAcc ? `${fromAcc.holder}-${fromAcc.name}` : '';
+            const toStr = toAcc ? `${toAcc.holder}-${toAcc.name}` : '';
+            let typeStr = '支出';
+            if (t.type === 'deposit') typeStr = '收入';
+            else if (t.type === 'transfer') typeStr = '內部轉帳';
+            const noteSafe = `"${(t.note || '').replace(/"/g, '""')}"`;
+            csvContent += `${t.date},${typeStr},${fromStr},${toStr},${t.category},${t.amount},${noteSafe}\n`;
+          });
+
+          const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.setAttribute('href', url);
+          link.setAttribute('download', `家庭財務收支與調度紀錄_${getTodayString()}.csv`);
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        };
+
+        const handleCSVUpload = (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+            try {
+              const text = evt.target.result;
+              const lines = text.split(/\r\n|\n/).filter(line => line.trim().length > 0);
+              if (lines.length < 2) return;
+
+              let count = 0;
+              for (let i = 1; i < lines.length; i++) {
+                const cols = lines[i].split(',').map(c => c.trim().replace(/^["']|["']$/g, ''));
+                if (cols.length < 5) continue;
+
+                const [date, typeStr, fromStr, toStr, category, amountStr, note] = cols;
+                const amt = parseFloat(amountStr) || 0;
+                if (amt === 0) continue;
+
+                let type = 'withdraw';
+                if (typeStr && typeStr.includes('收')) type = 'deposit';
+                else if (typeStr && typeStr.includes('轉')) type = 'transfer';
+
+                let fromAcc = accounts.value.find(a => fromStr && a.name.includes(fromStr));
+                if (!fromAcc) fromAcc = accounts.value[0];
+
+                if (type === 'transfer') {
+                  let toAcc = accounts.value.find(a => toStr && a.name.includes(toStr));
+                  if (!toAcc) toAcc = accounts.value.find(a => a.id === 99) || accounts.value[0];
+                  fromAcc.balance -= amt;
+                  fromAcc.editValue = fromAcc.balance;
+                  toAcc.balance += amt;
+                  toAcc.editValue = toAcc.balance;
+
+                  transactions.value.unshift({
+                    id: Date.now() + i,
+                    date: date || getTodayString(),
+                    accountId: fromAcc.id,
+                    targetAccountId: toAcc.id,
+                    type: 'transfer',
+                    category: category || '其他帳戶互轉',
+                    amount: amt,
+                    note: note || ''
+                  });
+                } else {
+                  if (type === 'withdraw') fromAcc.balance -= amt;
+                  else fromAcc.balance += amt;
+                  fromAcc.editValue = fromAcc.balance;
+
+                  transactions.value.unshift({
+                    id: Date.now() + i,
+                    date: date || getTodayString(),
+                    accountId: fromAcc.id,
+                    type: type,
+                    category: category || '日常食材與餐飲',
+                    amount: amt,
+                    note: note || ''
+                  });
+                }
+                count++;
+              }
+              saveToCloud();
+              alert(`成功匯入 ${count} 筆紀錄並同步雲端！`);
+            } catch (err) {
+              alert('CSV 解析失敗，請確認檔案格式是否正確。');
+            } finally {
+              e.target.value = '';
+            }
+          };
+          reader.readAsText(file, 'UTF-8');
+        };
+
+        const loadInitialData = () => {
+          const acc = localStorage.getItem('family_accounts_cloud_v9');
+          const mExpBud = localStorage.getItem('family_monthly_exp_budgets_cloud_v9');
+          const aSpBud = localStorage.getItem('family_annual_sp_budgets_cloud_v9');
+          const mIncBud = localStorage.getItem('family_monthly_inc_budgets_cloud_v9');
+          const txs = localStorage.getItem('family_txs_cloud_v9');
+
+          if (acc) {
+            const parsed = JSON.parse(acc);
+            // 確保共用帳戶始終存在
+            if (!parsed.find(a => a.id === 99)) {
+              parsed.unshift({ id: 99, holder: '共用', type: '銀行活儲', name: '家庭公費共用帳戶', balance: 0 });
+            }
+            accounts.value = parsed.map(a => ({ ...a, isEditing: false, editValue: a.balance }));
+          }
+          if (mExpBud) monthlyExpenseBudgets.value = { ...monthlyExpenseBudgets.value, ...JSON.parse(mExpBud) };
+          if (aSpBud) annualSpecialBudgets.value = { ...annualSpecialBudgets.value, ...JSON.parse(aSpBud) };
+          if (mIncBud) monthlyIncomeBudgets.value = { ...monthlyIncomeBudgets.value, ...JSON.parse(mIncBud) };
+          if (txs) transactions.value = JSON.parse(txs);
+
+          const savedCfg = localStorage.getItem('family_fb_config_v9');
+          if (savedCfg) {
+            try {
+              const cfg = JSON.parse(savedCfg);
+              fbConfigInput.value = cfg;
+              if (cfg.apiKey && cfg.projectId) {
+                firebase.initializeApp(cfg);
+                db = firebase.firestore();
+                initFirestoreListener();
+              }
+            } catch (e) {
+              console.error("自動連線 Firebase 失敗：", e);
+            }
+          }
+        };
+
+        onMounted(() => {
+          loadInitialData();
+        });
+
+        return {
+          activeTab,
+          filterOwner,
+          selectedMonth,
+          selectedYear,
+          isCloudConnected,
+          showConfigModal,
+          fbConfigInput,
+          accounts,
+          filteredAccounts,
+          availableTargetAccounts,
+          monthlyExpenseBudgets,
+          annualSpecialBudgets,
+          monthlyIncomeBudgets,
+          transactions,
+          filteredTransactions,
+          monthlyIncomeComparisonList,
+          monthlyExpenseComparisonList,
+          overBudgetExpenses,
+          monthlyIncomeBudgetTotal,
+          monthlyActualIncomeTotal,
+          monthlyExpenseBudgetTotal,
+          monthlyActualExpenseTotal,
+          monthlyBudgetSurplus,
+          monthlyActualSurplus,
+          annualMajorComparisonList,
+          annualTaxComparisonList,
+          annualTotalIncomeBudget,
+          annualActualIncomeTotal,
+          annualMajorBudgetTotal,
+          annualTaxBudgetTotal,
+          annualTotalExpenseBudget,
+          annualActualExpenseTotal,
+          annualBudgetSurplus,
+          annualActualSurplus,
+          txForm,
+          currentCategories,
+          totalAssets,
+          formatNumber,
+          getAccountName,
+          toggleEditBalance,
+          addTransaction,
+          deleteTransaction,
+          exportCSV,
+          handleCSVUpload,
+          saveToCloud,
+          saveFirebaseConfig
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
